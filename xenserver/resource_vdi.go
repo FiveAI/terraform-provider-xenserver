@@ -22,7 +22,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/ringods/go-xen-api-client"
+	"github.com/tustvold/go-xen-api-client"
 )
 
 const (
