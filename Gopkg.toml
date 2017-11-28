@@ -28,3 +28,7 @@
 [[constraint]]
   branch = "master"
   name = "github.com/tustvold/go-xen-api-client"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/davecgh/go-spew"

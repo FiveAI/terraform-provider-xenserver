@@ -27,6 +27,7 @@ import (
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/tustvold/go-xen-api-client"
+	"github.com/davecgh/go-spew/spew"
 )
 
 const (
@@ -80,7 +81,7 @@ func readTemplateVBDsToSchema(c *Connection, vm *VMDescriptor, s []interface{}, 
 			return err
 		}
 
-		// Skip unrelevant VBDs
+		// Skip irrelevant VBDs
 		if vbdType != vbd.Type {
 			continue
 		}
@@ -94,7 +95,7 @@ func readTemplateVBDsToSchema(c *Connection, vm *VMDescriptor, s []interface{}, 
 			if isTemplateDevice && userDevice == vbd.UserDevice {
 				found = true
 
-				vbd.IsTemplateDevice = isTemplateDevice
+				vbd.IsTemplateDevice = true
 
 				if err = vbd.Commit(c); err != nil {
 					return err
@@ -104,7 +105,7 @@ func readTemplateVBDsToSchema(c *Connection, vm *VMDescriptor, s []interface{}, 
 				data[vbdSchemaVdiUUID] = vbd.VDI.UUID
 				data[vbdSchemaBootable] = vbd.Bootable
 				data[vbdSchemaMode] = vbd.Mode
-				data[vbdSchemaTemplateDevice] = isTemplateDevice
+				data[vbdSchemaTemplateDevice] = true
 
 				break
 			}
@@ -136,10 +137,14 @@ func destroyTemplateVDIs(c *Connection, vbds []*VBDDescriptor) (err error) {
 	return nil
 }
 
+
+// Creates a VBD descriptor based on the provided schema
 func readVBDFromSchema(c *Connection, s map[string]interface{}) (*VBDDescriptor, error) {
 	// In API it is called user_device, but in terraform provider it is called template device
 	// to emphasise that it is used to map VBD from template
 	userDevice := s[vbdSchemaUserDevice].(string)
+
+	log.Printf("[TRACE] Reading VBDFromSchema %s", spew.Sdump(s))
 
 	var vdi *VDIDescriptor = nil
 
@@ -253,6 +258,10 @@ func setSchemaVBDs(c *Connection, vm *VMDescriptor, d *schema.ResourceData) erro
 	}
 
 	log.Println("[DEBUG] Found ", len(cdrom), " CDs and ", len(hdd), " HDDs")
+	log.Printf("HDDs - %s", spew.Sdump(hdd))
+	log.Printf("CDs - %s", spew.Sdump(cdrom))
+
+	log.Printf("Current - %s", spew.Sdump(d.Get(vmSchemaHardDrive)))
 	err = d.Set(vmSchemaHardDrive, hdd)
 	if err != nil {
 		log.Println("[ERROR] ", err)
@@ -334,21 +343,19 @@ func vbdHash(v interface{}) int {
 
 	log.Println("[DEBUG] Calculating hash for ", v)
 
-	if isTemplateDevice || userDevice != "" {
-		b, _ = buf.WriteString(fmt.Sprintf("%s", userDevice))
-		count += b
-	}
-
 	if !isTemplateDevice {
 		b, _ = buf.WriteString(fmt.Sprintf("-%s", vdiUUID))
 		count += b
 
 		if mode != "" {
-			b, _ = buf.WriteString(fmt.Sprintf("%-s", mode))
+			b, _ = buf.WriteString(fmt.Sprintf("-%s", strings.ToLower(mode)))
 			count += b
 		}
 
 		b, _ = buf.WriteString(fmt.Sprintf("-%t", bootable))
+		count += b
+	} else {
+		b, _ = buf.WriteString(fmt.Sprintf("%s", userDevice))
 		count += b
 	}
 	log.Println("Consumed total ", count, " bytes to generate hash")
@@ -358,29 +365,27 @@ func vbdHash(v interface{}) int {
 }
 
 func createVBDs(c *Connection, s []interface{}, vbdType xenAPI.VbdType, vm *VMDescriptor) (err error) {
-
+	log.Printf("[TRACE] createVBDs")
 	if err := readTemplateVBDsToSchema(c, vm, s, vbdType); err != nil {
 		return err
 	}
 
-	log.Println("[DEBUG] Creating ", len(s), " VBDS of type ", vbdType)
+	log.Printf("[TRACE] Creating %d VBDS of type %s",len(s), vbdType)
 
 	for _, schm := range s {
 		data := schm.(map[string]interface{})
+		log.Printf("[TRACE] Creating VBD for %s", spew.Sdump(data))
 
-		if _, ok := data[vbdSchemaUserDevice]; ok {
+		if val, ok := data[vbdSchemaTemplateDevice]; ok && val.(bool) {
+			log.Printf("[TRACE] Template Device, Skipping")
 			continue
 		}
 
 		var vbd *VBDDescriptor
 		var err error
+
 		if vbd, err = readVBDFromSchema(c, data); err != nil {
 			return err
-		}
-
-		// User Device is used to specify existing VBDs
-		if vbd.UserDevice != "" {
-			continue
 		}
 
 		vbd.Type = vbdType
@@ -403,6 +408,7 @@ func createVBDs(c *Connection, s []interface{}, vbdType xenAPI.VbdType, vm *VMDe
 	return nil
 }
 
+// Returns the schema for the vbd resource
 func resourceVBD() *schema.Resource {
 	return &schema.Resource{
 
@@ -422,6 +428,7 @@ func resourceVBD() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
+				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 				//ConflictsWith: []string{"hard_drive.0.vdi_uuid", "cdrom.0.vdi_uuid"},
 			},
 			vbdSchemaBootable: &schema.Schema{

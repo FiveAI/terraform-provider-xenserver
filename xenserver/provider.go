@@ -3,10 +3,13 @@ package xenserver
 import (
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
+	"strings"
 )
 
-// Provider ...
+// Returns the schema for the provider
+// and all of its resources and datasources
 func Provider() terraform.ResourceProvider {
+
 	return &schema.Provider{
 		Schema: map[string]*schema.Schema{
 			"url": &schema.Schema{
@@ -47,6 +50,7 @@ func Provider() terraform.ResourceProvider {
 
 var descriptions map[string]string
 
+// Initialised the descriptions map
 func init() {
 	descriptions = map[string]string{
 		"url": "The URL to the XenAPI endpoint, typically \"https://<XenServer Management IP>\"",
@@ -57,6 +61,7 @@ func init() {
 	}
 }
 
+// Loads the provider's configuration
 func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	config := Config{
 		URL:      d.Get("url").(string),
@@ -65,4 +70,10 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	}
 
 	return config.NewConnection()
+}
+
+// ignoreCaseDiffSuppressFunc is a DiffSuppressFunc from helper/schema that is
+// used to ignore any case-changes in a return value.
+func ignoreCaseDiffSuppressFunc(k, old, new string, d *schema.ResourceData) bool {
+	return strings.ToLower(old) == strings.ToLower(new)
 }

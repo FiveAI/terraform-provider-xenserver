@@ -26,6 +26,7 @@ import (
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/tustvold/go-xen-api-client"
+	"github.com/davecgh/go-spew/spew"
 )
 
 const (
@@ -47,6 +48,7 @@ const (
 	vmSchemaXenstoreData              = "xenstore_data"
 )
 
+// Returns the schema for the VM resource
 func resourceVM() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceVMCreate,
@@ -94,9 +96,10 @@ func resourceVM() *schema.Resource {
 			},
 
 			vmSchemaBootOrder: &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				Default:  "dc",
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          "dc",
+				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 			},
 
 			vmSchemaNetworkInterfaces: &schema.Schema{
@@ -164,17 +167,23 @@ func filterVMTemplates(c *Connection, vms []xenAPI.VMRef) ([]xenAPI.VMRef, error
 }
 
 func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
+	log.Printf("[TRACE] resourceVMCreate - %s", d.Id())
+
 	c := m.(*Connection)
 
 	dBaseTemplateName := d.Get(vmSchemaBaseTemplateName).(string)
 
+	log.Printf("[TRACE] Creating VM with base template name %s", dBaseTemplateName)
+
 	xenBaseTemplates, err := c.client.VM.GetByNameLabel(c.session, dBaseTemplateName)
 	if err != nil {
+		log.Printf("[ERROR] Failed to find template with name %s - %s", dBaseTemplateName, err)
 		return err
 	}
 
 	xenBaseTemplates, err = filterVMTemplates(c, xenBaseTemplates)
 	if err != nil {
+		log.Printf("[ERROR] Error filtering templates - %s", err)
 		return err
 	}
 
@@ -192,6 +201,7 @@ func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
 
 	xenVM, err := c.client.VM.Clone(c.session, xenBaseTemplate, dNameLabel)
 	if err != nil {
+		log.Printf("[ERROR] Failed to clone template - %s", err)
 		return err
 	}
 
@@ -200,6 +210,7 @@ func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
 	}
 
 	if err = vm.Query(c); err != nil {
+		log.Printf("[ERROR] Failed retrieve configuration of newly created VM - %s", err)
 		return err
 	}
 
@@ -213,54 +224,73 @@ func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
 	// Memory configuration
 	mem, ok := d.GetOk(vmSchemaStaticMemoryMin)
 	if ok {
+		log.Printf("[TRACE] Setting VM static memory minimum to %d", mem.(int))
 		vm.StaticMemory.Min = mem.(int)
 	}
 
 	mem, ok = d.GetOk(vmSchemaStaticMemoryMax)
 	if ok {
+		log.Printf("[TRACE] Setting VM static memory maximum to %d", mem.(int))
 		vm.StaticMemory.Max = mem.(int)
 	}
 
 	mem, ok = d.GetOk(vmSchemaDynamicMemoryMin)
 	if ok {
+		log.Printf("[TRACE] Setting VM dynamic memory minimum to %d", mem.(int))
 		vm.DynamicMemory.Min = mem.(int)
 	}
 
 	mem, ok = d.GetOk(vmSchemaDynamicMemoryMax)
 	if ok {
+		log.Printf("[TRACE] Setting VM static memory maximum to %d", mem.(int))
 		vm.DynamicMemory.Max = mem.(int)
 	}
 
+	log.Printf("[TRACE] Commiting memory configuration")
 	if err = vm.UpdateMemory(c); err != nil {
+		log.Printf("[ERROR] Error commiting memory configuration - %s", err)
 		return err
 	}
 
 	// Set VCPUs number
+	log.Printf("[TRACE] Setting Number of VCPUs")
 	vm.VCPUCount = d.Get(vmSchemaVcpus).(int)
 	if err = vm.UpdateVCPUs(c); err != nil {
+		log.Printf("[ERROR] Error setting number of VCPUs - %s", err)
 		return err
 	}
 
+	//TODO: Why is this only set here? Surely it should be set at the start?
+	log.Printf("[TRACE] Setting the VM's UUID")
 	d.SetId(vm.UUID)
 
+	log.Printf("[TRACE] Setting Xenstore Data")
 	dXenstoreDataRaw, ok := d.GetOk(vmSchemaXenstoreData)
 	if ok && dXenstoreDataRaw != nil {
 		vm.XenstoreData = make(map[string]string)
 		for key, value := range dXenstoreDataRaw.(map[string]interface{}) {
+			log.Printf("[TRACE] Setting Xenstore Data with key %s and value %s", key, value.(string))
 			vm.XenstoreData[key] = value.(string)
 		}
 
+		log.Printf("[TRACE] Committing Xenstore Data")
 		err = c.client.VM.SetXenstoreData(c.session, vm.VMRef, vm.XenstoreData)
 		if err != nil {
+			log.Printf("[ERROR] Failed to commit Xenstore data - %s", err)
 			return err
 		}
 	}
 
+	log.Printf("[TRACE] Retrieving Xenstore Data")
 	if vm.XenstoreData, err = c.client.VM.GetXenstoreData(c.session, vm.VMRef); err != nil {
+		log.Printf("[ERROR] Failed to retrieve Xenstore Data - %s", err)
 		return err
 	}
+
+	log.Printf("[TRACE] Updating Schema's Xenstore Data")
 	err = d.Set(vmSchemaXenstoreData, vm.XenstoreData)
 	if err != nil {
+		log.Printf("[ERROR] Failed to update Schema's Xenstore Data - %s", err)
 		return err
 	}
 
@@ -268,44 +298,52 @@ func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
 
 	var vifs []*VIFDescriptor
 
+	log.Printf("[TRACE] Updating Schema's Xenstore Data")
 	if vifs, err = readVIFsFromSchema(c, d.Get(vmSchemaNetworkInterfaces).(*schema.Set).List()); err != nil {
+		log.Printf("[ERROR] Updating Schema's Xenstore Data - %s", err)
 		return err
 	}
 
+	log.Printf("[TRACE] Updating Schema's Xenstore Data")
 	for _, vif := range vifs {
 		vif.VM = vm
 		if vif, err = createVIF(c, vif); err != nil {
-			log.Println("[ERROR] ", err)
+			log.Printf("[ERROR] Error creating VIF (%s) - %s", vif.UUID, err)
 			return err
 		}
 	}
 
-	log.Println("[DEBUG] Creating CDs")
+	log.Printf("[TRACE] Creating CDs")
 	if err = createVBDs(c, d.Get(vmSchemaCdRom).(*schema.Set).List(), xenAPI.VbdTypeCD, vm); err != nil {
-		log.Println("[ERROR] ", err)
+		log.Printf("[ERROR] Error creating CDs - %s", err)
 		return err
 	}
 
-	log.Println("[DEBUG] Creating HDDs")
+	log.Printf("[TRACE] Creating HDDs")
 	if err = createVBDs(c, d.Get(vmSchemaHardDrive).(*schema.Set).List(), xenAPI.VbdTypeDisk, vm); err != nil {
-		log.Println("[ERROR] ", err)
+		log.Printf("[ERROR] Error creating HDDs - %s", err)
 		return err
 	}
 
+	log.Printf("[TRACE] Setting Schema's VBDs")
 	if setSchemaVBDs(c, vm, d) != nil {
-		log.Println("[ERROR] ", err)
+		log.Printf("[ERROR] Error setting Schema's VBDs - %s", err)
 		return err
 	}
 
+	log.Printf("[TRACE] Setting Boot Order")
 	if _order, ok := d.GetOk(vmSchemaBootOrder); ok {
 		order := _order.(string)
 		vm.HVMBootParameters["order"] = order
 	}
 
+	log.Printf("[TRACE] Committing Boot Order")
 	if err = c.client.VM.SetHVMBootParams(c.session, vm.VMRef, vm.HVMBootParameters); err != nil {
+		log.Printf("[ERROR] Error Committing Boot Order - %s", err)
 		return err
 	}
 
+	log.Printf("[TRACE] Setting Cores per socket")
 	if _coresPerSocket, ok := d.GetOk(vmSchemaCoresPerSocket); ok {
 		coresPerSocket := _coresPerSocket.(int)
 
@@ -329,34 +367,57 @@ func resourceVMCreate(d *schema.ResourceData, m interface{}) error {
 		}
 	}
 
+	log.Printf("[TRACE] Committing VM Platform Settings")
 	if err = c.client.VM.SetPlatform(c.session, vm.VMRef, vm.Platform); err != nil {
+		log.Printf("[ERROR] Committing VM Platform Setting - %s", err)
 		return err
 	}
 
-	log.Println("[DEBUG] Provisioning VM")
+	log.Printf("[TRACE] Querying other config")
+	other_config, err := c.client.VM.GetOtherConfig(c.session, xenVM)
+	if err != nil {
+		log.Printf("[ERROR] Error getting other config - %s", err)
+		return err
+	}
+
+	if _, ok := other_config["disks"]; ok {
+		log.Printf("[TRACE] Removing disks provided by template")
+		err = c.client.VM.RemoveFromOtherConfig(c.session, xenVM, "disks")
+		if err != nil {
+			log.Printf("[ERROR] Error removing disks provided by template - %s", err)
+			return err
+		}
+	}
+
+	log.Printf("[TRACE] Provisioning VM")
 	err = c.client.VM.Provision(c.session, xenVM)
 	if err != nil {
+		log.Printf("[ERROR] Error provisioning VM - %s", err)
 		return err
 	}
 
 	// reset template flag
 	if vm.IsATemplate {
 		if err = c.client.VM.SetIsATemplate(c.session, vm.VMRef, false); err != nil {
+			log.Printf("[ERROR] Error resetting template flag - %s", err)
 			return err
 		}
 	}
 
-	log.Println("[DEBUG] Starting VM")
+	log.Println("[TRACE] Starting VM")
 	err = c.client.VM.Start(c.session, xenVM, false, false)
 	if err != nil {
+		log.Printf("[ERROR] Error starting VM - %s", err)
 		return err
 	}
-	log.Println("[DEBUG] Done")
+	log.Println("[TRACE] Done")
 
 	return nil
 }
 
 func resourceVMRead(d *schema.ResourceData, m interface{}) error {
+	log.Printf("resourceVMRead - %s", d.Id())
+
 	c := m.(*Connection)
 
 	vm := &VMDescriptor{
@@ -365,6 +426,7 @@ func resourceVMRead(d *schema.ResourceData, m interface{}) error {
 	if err := vm.Load(c); err != nil {
 		if xenErr, ok := err.(*xenAPI.Error); ok {
 			if xenErr.Code() == xenAPI.ERR_UUID_INVALID {
+				log.Printf("[ERROR] Error failed to read from VM (%s) - %s", d.Id(), err)
 				d.SetId("")
 				return nil
 			}
@@ -429,13 +491,15 @@ func resourceVMRead(d *schema.ResourceData, m interface{}) error {
 			VIFRef: _vif,
 		}
 
+		log.Printf("[TRACE] Retrieving VIF %s", _vif)
 		if err := vif.Query(c); err != nil {
+			log.Printf("[ERROR] Error retrieving VIF (%s) - %s", _vif, err)
 			return err
 		}
 
-		log.Println("[DEBUG] Found VIF", vif.UUID)
+		log.Println("[TRACE] Found VIF", vif.UUID)
 		vifData := fillVIFSchema(vif)
-		log.Println("[DEBUG] VIF: ", vifData)
+		log.Println("[TRACE] VIF: ", vifData)
 
 		vifs = append(vifs, vifData)
 	}
@@ -445,6 +509,7 @@ func resourceVMRead(d *schema.ResourceData, m interface{}) error {
 		return err
 	}
 
+	log.Printf("[TRACE] Setting Schema VBDs")
 	if setSchemaVBDs(c, vm, d) != nil {
 		log.Println("[ERROR] ", err)
 		return err
@@ -468,6 +533,8 @@ func resourceVMRead(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceVMUpdate(d *schema.ResourceData, m interface{}) error {
+	log.Printf("resourceVMUpdate - %s", spew.Sdump(d))
+
 	c := m.(*Connection)
 
 	vm := &VMDescriptor{
@@ -791,6 +858,8 @@ func resourceVMUpdate(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceVMDelete(d *schema.ResourceData, m interface{}) error {
+	log.Printf("[TRACE] resourceVMDelete - %s", d.Id())
+
 	c := m.(*Connection)
 
 	vm := VMDescriptor{
@@ -799,6 +868,7 @@ func resourceVMDelete(d *schema.ResourceData, m interface{}) error {
 	if err := vm.Load(c); err != nil {
 		if xenErr, ok := err.(*xenAPI.Error); ok {
 			if xenErr.Code() == xenAPI.ERR_UUID_INVALID {
+				log.Printf("[TRACE] VM already deleted - %s", d.Id());
 				d.SetId("")
 				return nil
 			}
@@ -807,34 +877,48 @@ func resourceVMDelete(d *schema.ResourceData, m interface{}) error {
 		return err
 	}
 
+	// Shutdown VM
 	if vm.PowerState == xenAPI.VMPowerStateRunning {
+		log.Printf("[TRACE] Shutting down VM - %s", d.Id());
 		if err := c.client.VM.HardShutdown(c.session, vm.VMRef); err != nil {
 			return err
 		}
 	}
 
+	// Destroy Network Interfaces
+	log.Printf("[TRACE] Retrieving VIFs")
 	vifs, err := c.client.VM.GetVIFs(c.session, vm.VMRef)
 	if err != nil {
+		log.Printf("[ERROR] Error Retrieving VIFs")
 		return err
 	}
 
 	for _, vif := range vifs {
+		log.Printf("[TRACE] Destroying VIF - %s", vif)
 		if err := c.client.VIF.Destroy(c.session, vif); err != nil {
+			log.Printf("[ERROR] Error Destroying VIF - %s", vif)
 			return err
 		}
 	}
 
+	// Destroy VBDs
+	log.Printf("[TRACE] Retrieving Template VBDs")
 	var vbds []*VBDDescriptor
 	if vbds, err = queryTemplateVBDs(c, &vm); err != nil {
+		log.Printf("[ERROR] Retrieving Template VBDs")
 		return err
 	}
-	log.Printf("[DEBUG] Found %d template vbds", len(vbds))
+	log.Printf("[DEBUG] Found %d Template VBDs", len(vbds))
 
+	// Destroy VM
+	log.Printf("[TRACE] Destroying VM")
 	if err := c.client.VM.Destroy(c.session, vm.VMRef); err != nil {
+		log.Printf("[ERROR] Error Destroying VM")
 		return err
 	}
 
 	if err = destroyTemplateVDIs(c, vbds); err != nil {
+		log.Printf("[ERROR] Error Destroying Template VBDs")
 		return err
 	}
 
@@ -843,18 +927,22 @@ func resourceVMDelete(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceVMExists(d *schema.ResourceData, m interface{}) (bool, error) {
+	log.Printf("[TRACE] resourceVMExists - %s", d.Id())
+
 	c := m.(*Connection)
 
 	_, err := c.client.VM.GetByUUID(c.session, d.Id())
 	if err != nil {
 		if xenErr, ok := err.(*xenAPI.Error); ok {
 			if xenErr.Code() == xenAPI.ERR_UUID_INVALID {
+				log.Printf("[TRACE] VM doesn't exist - UUID %s not found", d.Id());
 				return false, nil
 			}
 		}
-
+		log.Printf("[TRACE] VM doesn't exist - other error");
 		return false, err
 	}
 
+	log.Printf("[TRACE] VM exists");
 	return true, nil
 }
