@@ -422,6 +422,7 @@ func resourceVBD() *schema.Resource {
 				Type:          schema.TypeString,
 				Optional:      true,
 				Computed:      true,
+				ForceNew:      true,
 				ConflictsWith: []string{"hard_drive.0.is_from_template", "cdrom.0.is_from_template"},
 			},
 			vbdSchemaUserDevice: &schema.Schema{

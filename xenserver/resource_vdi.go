@@ -200,6 +200,7 @@ func resourceVDIUpdate(d *schema.ResourceData, m interface{}) error {
 	return nil
 }
 func resourceVDIDelete(d *schema.ResourceData, m interface{}) error {
+	log.Printf("[TRACE] resourceVDIDelete")
 	c := m.(*Connection)
 
 	vdi := &VDIDescriptor{
@@ -210,9 +211,51 @@ func resourceVDIDelete(d *schema.ResourceData, m interface{}) error {
 		return err
 	}
 
+	log.Printf("[TRACE] Getting VBDs")
+	vbds, err := c.client.VDI.GetVBDs(c.session, vdi.VDIRef)
+	if err != nil {
+		log.Printf("[ERROR] Error Retrieving VBDs")
+		return err
+	}
+
+	for _, vbd := range vbds {
+		log.Printf("[TRACE] Getting VMs for VBD - %s", vbd)
+		vm, err := c.client.VBD.GetVM(c.session, vbd)
+		if err != nil {
+			log.Printf("[ERROR] Error retrieving VM for VBD - %s ", vbd)
+			return err
+		}
+
+		// TODO: Handle if vm doesn't exist
+
+		log.Printf("[TRACE] Getting VM Power State")
+		power_state, err := c.client.VM.GetPowerState(c.session, vm)
+		if err != nil {
+			log.Printf("[ERROR] Error getting power state of VM %s for VBD %s for VDI %s", vm, vbd, vdi.VDIRef)
+			return err
+		}
+
+		if power_state != xenAPI.VMPowerStateHalted {
+			log.Printf("[WARN] Shutting down VM %s", vm)
+			err = c.client.VM.Shutdown(c.session, vm)
+			if err != nil {
+				log.Printf("[ERROR] Error shutting down VM")
+				return err
+			}
+		}
+
+		log.Printf("[TRACE] Destroying VBD %s for VDI %s", vbd, vdi)
+		if err := c.client.VBD.Destroy(c.session, vbd); err != nil {
+			log.Printf("[ERROR] Error destroying VBD %s for VDI %s", vbd, vdi)
+			return err
+		}
+	}
+
+	log.Printf("[TRACE] Trying to destroy VDI")
 	if err := c.client.VDI.Destroy(c.session, vdi.VDIRef); err != nil {
 		return err
 	}
+	log.Printf("[TRACE] Destroyed VDI")
 
 	return nil
 }
