@@ -1,7 +1,7 @@
 package xenserver
 
 import (
-	"github.com/tustvold/go-xen-api-client"
+	"github.com/fiveai/go-xen-api-client"
 )
 
 // Config ...

@@ -29,7 +29,7 @@ import (
 
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/tustvold/go-xen-api-client"
+	"github.com/fiveai/go-xen-api-client"
 )
 
 const (

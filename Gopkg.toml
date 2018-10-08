@@ -27,7 +27,7 @@
 
 [[constraint]]
   branch = "master"
-  name = "github.com/tustvold/go-xen-api-client"
+  name = "github.com/fiveai/go-xen-api-client"
 
 [[constraint]]
   branch = "master"

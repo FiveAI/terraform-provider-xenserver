@@ -25,7 +25,7 @@ import (
 	"strconv"
 
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/tustvold/go-xen-api-client"
+	"github.com/fiveai/go-xen-api-client"
 	"github.com/davecgh/go-spew/spew"
 )
 
